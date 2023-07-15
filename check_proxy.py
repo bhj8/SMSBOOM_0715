@@ -1,39 +1,44 @@
-import requests
+import aiohttp
+import asyncio
 import os
 
-def check_proxy(protocol, ip, port):
+sem = asyncio.Semaphore(50)
+
+async def check_proxy(session, protocol, ip, port):
     url = f"{protocol}://{ip}:{port}"
-    proxies = {protocol: url}
+    proxy = os.environ.get('http_proxy', None)
 
-    if protocol in ['socks4', 'socks5']:
-        proxies = {
-            'http': url,
-            'https': url,
-        }
+    async with sem:
+        try:
+            async with session.get('https://www.google.com', proxy=proxy, timeout=5) as response:
+                print(f"Success with {ip}:{port}")
+                return response.status == 200
+        except Exception as e:
+            print(f"Error with {ip}:{port}. Exception: {e}")
+            return False
 
-    try:
-        response = requests.get('https://www.google.com', proxies=proxies, timeout=5)
-        print(f"Success with {ip}:{port}")
-        return response.status_code == 200
-    except Exception as e:
-        print(f"Error with {ip}:{port}. Exception: {e}")
-        return False
 
-def process_file(protocol, filename):
-    with open(filename, 'r') as f:
-        lines = f.readlines()
+async def process_file(protocol, filename):
+    async with aiohttp.ClientSession() as session:
+        with open(filename, 'r') as f:
+            lines = f.readlines()
 
-    valid_proxies = [line.strip() for line in lines if check_proxy(protocol, *line.strip().split(':'))]
+        tasks = [check_proxy(session, protocol, *line.strip().split(':')) for line in lines]
 
-    with open(filename, 'w') as f:
-        for proxy in valid_proxies:
-            f.write(proxy + '\n')
+        results = await asyncio.gather(*tasks)
+
+        valid_proxies = [line for result, line in zip(results, lines) if result]
+
+        with open(filename, 'w') as f:
+            for proxy in valid_proxies:
+                f.write(proxy + '\n')
+
 
 # 设置全局代理
 os.environ['http_proxy'] = "http://127.0.0.1:7890"
 os.environ['https_proxy'] = "http://127.0.0.1:7890"
 
-# 处理文件
-process_file('http', 'http_proxy.txt')
-process_file('socks4', 'socks4_proxy.txt')
-process_file('socks5', 'socks5_proxy.txt')
+# 运行协程
+asyncio.run(process_file('http', 'http_proxy.txt'))
+asyncio.run(process_file('socks4', 'socks4_proxy.txt'))
+asyncio.run(process_file('socks5', 'socks5_proxy.txt'))
